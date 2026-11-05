@@ -1,0 +1,37 @@
+// 1. Discover all running Docker containers via the socket
+discovery.docker "all_containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// 2. Filter for containers in mgmt_net and clean up labels
+discovery.relabel "mgmt_net_logs" {
+  targets = discovery.docker.all_containers.targets
+
+  // RULE A: Only keep containers that belong to the mgmt_net network
+  rule {
+    source_labels = ["__meta_docker_container_network"]
+    regex         = "mgmt_net"
+    action        = "keep"
+  }
+
+  // RULE B: Extract the clean container name (removes the leading slash)
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+// 3. Read the logs from the filtered mgmt_net containers
+loki.source.docker "docker_log_receiver" {
+  host    = "unix:///var/run/docker.sock"
+  targets = discovery.relabel.mgmt_net_logs.output
+  forward_to = [loki.write.local_loki.receiver]
+}
+
+// 4. Send the accumulated logs to Loki
+loki.write "local_loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

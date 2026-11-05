@@ -1,0 +1,107 @@
+services:
+  CameraA:
+    build:
+      context: ./fog_devices
+      dockerfile: ./camera/Dockerfile
+    networks:
+      zone_a_net:
+        ipv4_address: 10.10.1.1
+  CameraB:
+    build:
+      context: ./fog_devices
+      dockerfile: ./camera/Dockerfile
+    networks:
+      zone_a_net:
+        ipv4_address: 10.10.2.1
+  fogA:
+    build:
+      context: ./fog_devices
+      dockerfile: ./fog/Dockerfile
+    environment:
+      - CLOUD=http://cloud:8000
+      - EDGE_ID=fog1
+    networks:
+      zone_a_net:
+        ipv4_address: 10.10.1.2
+      backbone_net:
+        ipv4_address: 10.10.3.1
+      mgmt_net:
+        ipv4_address: 10.10.4.1
+    cpus: 0.5
+    mem_limit: 256M
+  fogB:
+    build:
+      context: ./fog_devices
+      dockerfile: ./fog/Dockerfile
+    environment:
+      - CLOUD=http://cloud:8000
+      - EDGE_ID=fog2
+    networks:
+      zone_a_net:
+        ipv4_address: 10.10.2.2
+      backbone_net:
+        ipv4_address: 10.10.3.2
+      mgmt_net:
+        ipv4_address: 10.10.4.2
+    cpus: 0.5
+    mem_limit: 256M
+  cloud:
+    build:
+      context: ./fog_devices
+      dockerfile: ./cloud/Dockerfile
+    networks:
+      backbone_net:
+        ipv4_address: 10.10.3.3
+      mgmt_net:
+        ipv4_address: 10.10.4.3
+
+  loki:
+    image: grafana/loki:3.7.0
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    networks:
+      - mgmt_net
+    volumes:
+      - loki_data:/loki
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3333:3000"
+    networks:
+      - mgmt_net
+    depends_on:
+      - loki
+  alloy:
+    image: grafana/alloy:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro # Mount as read-only for security
+      - ./logging/config.alloy:/etc/alloy/config.alloy:ro # The :ro flag stands for Read-Only. It ensures that even if someone somehow compromised the Alloy container, they cannot write to, modify, or inject malicious commands back into your Mac's Docker engine. They can only read the log streams.
+    command: run --storage.path=/tmp/alloy /etc/alloy/config.alloy
+    networks:
+      - mgmt_net
+    depends_on:
+      - loki
+volumes:
+  loki_data:
+networks:
+  zone_a_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.1.0/24
+  zone_b_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.2.0/24
+  backbone_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.3.0/24
+  mgmt_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.4.0/24
