@@ -5,9 +5,11 @@ import time
 import requests
 import uuid
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 CAMERA_ID = os.environ.get("CAMERA_ID")
 FOG_URL = os.environ.get("FOG")
+ATTACK_MODE = os.getenv("ATTACK_MODE", "false").lower() == "true"
 
 
 def send_image(image):
@@ -15,34 +17,39 @@ def send_image(image):
     if not success:
         raise RuntimeError("Image encoding failed")
 
-    start = time.perf_counter()
     image_id = str(uuid.uuid4())
 
     try:
+        image_bytes = encoded.tobytes()
+        start = time.perf_counter()
         response = requests.post(
             f"{FOG_URL}/process",
             files={
                 "file": (
                     f"camera_{CAMERA_ID}_${image_id}.jpg",
-                    encoded.tobytes(),
+                    # 5MB
+                    image_bytes,
                     "image/jpeg",
                 )
+            },
+            headers={
+                "X-File-Size": str(len(image_bytes)),
             },
             data={"image_id": image_id, "camera_id": CAMERA_ID},
         )
         elapsed = time.perf_counter() - start
         if response.status_code == 200:
-            print(f"Camera {CAMERA_ID}: image sent successfully")
-            print(f"Total request time: {elapsed:.4f}s")
             print(
-                "Fog processing time:",
-                response.headers.get("X-Processing-Time"),
-                "seconds",
+                f"Camera: {CAMERA_ID} | "
+                f"Status: Success | "
+                f"Total Request Time: {elapsed:.4f}s | "
+                f"Fog Processing Time: {response.headers.get('X-Processing-Time')}s",
+                flush=True,
             )
         else:
-            print("Error:", response.text)
+            print("Error:", response.text, flush=True)
     except Exception as exc:
-        print(exc)
+        print(exc, flush=True)
 
 
 def generate_image():
@@ -70,14 +77,35 @@ def generate_image():
     return image
 
 
-if __name__ == "__main__":
-    print(f"Starting camera {CAMERA_ID}")
-    print(f"Fog node: {FOG_URL}")
-    try:
-        while True:
-            image = generate_image()
-            send_image(image)
-            time.sleep(2.0)
+def normal_mode():
+    print("NORMAL CAMERA MODE", flush=True)
+    while True:
+        image = generate_image()
+        send_image(image)
+        time.sleep(2)
 
+
+def attack_mode():
+    print("ATTACK CAMERA MODE", flush=True)
+
+    # Fixed number of concurrent requests; no unbounded queue.
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        pending = set()
+        while True:
+            # Keep at most three requests in flight.
+            pending = {f for f in pending if not f.done()}
+            if len(pending) < 50:
+                image = generate_image()
+                pending.add(executor.submit(send_image, image))
+
+
+if __name__ == "__main__":
+    print(f"Starting camera {CAMERA_ID}", flush=True)
+    print(f"Fog node: {FOG_URL}", flush=True)
+    try:
+        if ATTACK_MODE:
+            attack_mode()
+        else:
+            normal_mode()
     except KeyboardInterrupt:
-        print(f"\nCamera {CAMERA_ID} stopped.")
+        print(f"\nCamera {CAMERA_ID} stopped.", flush=True)

@@ -1,87 +1,94 @@
+name: fog
 services:
-  CameraA:
+  camera-a:
+    image: camera:latest
     build:
       context: ./fog_devices
       dockerfile: ./camera/Dockerfile
+    labels:
+      monitoring: "loki"
+    environment:
+      - FOG=http://fog-a:8000
+      - CAMERA_ID=camera1
+      - ATTACK_MODE=${ATTACK_MODE:-true}
     networks:
       zone_a_net:
-        ipv4_address: 10.10.1.1
-  CameraB:
+        ipv4_address: 10.10.1.10
+  camera-b:
+    image: camera:latest
     build:
       context: ./fog_devices
       dockerfile: ./camera/Dockerfile
+    labels:
+      monitoring: "loki"
+    environment:
+      - FOG=http://fog-b:8000
+      - CAMERA_ID=camera2
     networks:
-      zone_a_net:
-        ipv4_address: 10.10.2.1
-  fogA:
+      zone_b_net:
+        ipv4_address: 10.10.2.10
+  fog-a:
+    image: fog:latest
     build:
       context: ./fog_devices
       dockerfile: ./fog/Dockerfile
+    labels:
+      monitoring: "loki"
     environment:
       - CLOUD=http://cloud:8000
       - EDGE_ID=fog1
+    cap_add:
+      - NET_ADMIN
     networks:
       zone_a_net:
-        ipv4_address: 10.10.1.2
+        ipv4_address: 10.10.1.12
+        interface_name: eth1
       backbone_net:
-        ipv4_address: 10.10.3.1
+        ipv4_address: 10.10.3.11
+        interface_name: eth0
       mgmt_net:
-        ipv4_address: 10.10.4.1
+        ipv4_address: 10.10.4.11
+        interface_name: eth2
     cpus: 0.5
     mem_limit: 256M
-  fogB:
+  fog-b:
+    image: fog:latest
     build:
       context: ./fog_devices
       dockerfile: ./fog/Dockerfile
+    labels:
+      monitoring: "loki"
     environment:
       - CLOUD=http://cloud:8000
       - EDGE_ID=fog2
+    cap_add:
+      - NET_ADMIN
     networks:
-      zone_a_net:
-        ipv4_address: 10.10.2.2
+      zone_b_net:
+        ipv4_address: 10.10.2.12
+        interface_name: eth1
       backbone_net:
-        ipv4_address: 10.10.3.2
+        ipv4_address: 10.10.3.12
+        interface_name: eth0
       mgmt_net:
-        ipv4_address: 10.10.4.2
+        ipv4_address: 10.10.4.12
+        interface_name: eth2
     cpus: 0.5
     mem_limit: 256M
   cloud:
+    image: cloud:latest
     build:
       context: ./fog_devices
       dockerfile: ./cloud/Dockerfile
+    labels:
+      monitoring: "loki"
+    cpus: 0.5
+    mem_limit: 512M
     networks:
       backbone_net:
-        ipv4_address: 10.10.3.3
+        ipv4_address: 10.10.3.13
       mgmt_net:
-        ipv4_address: 10.10.4.3
-
-  loki:
-    image: grafana/loki:3.7.0
-    command: -config.file=/etc/loki/local-config.yaml
-    ports:
-      - "3100:3100"
-    networks:
-      - mgmt_net
-    volumes:
-      - loki_data:/loki
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3333:3000"
-    networks:
-      - mgmt_net
-    depends_on:
-      - loki
-  alloy:
-    image: grafana/alloy:latest
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro # Mount as read-only for security
-      - ./logging/config.alloy:/etc/alloy/config.alloy:ro # The :ro flag stands for Read-Only. It ensures that even if someone somehow compromised the Alloy container, they cannot write to, modify, or inject malicious commands back into your Mac's Docker engine. They can only read the log streams.
-    command: run --storage.path=/tmp/alloy /etc/alloy/config.alloy
-    networks:
-      - mgmt_net
-    depends_on:
-      - loki
+        ipv4_address: 10.10.4.13
 volumes:
   loki_data:
 networks:

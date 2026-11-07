@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, Response
+from fastapi import FastAPI, UploadFile, File, Form, Response, Request
 import cv2
 import numpy as np
 import time
@@ -7,13 +7,34 @@ import math
 import requests
 import hashlib
 import os
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from collections import defaultdict, deque
 
 CLOUD_URL = os.environ.get("CLOUD")
 EDGE_ID = os.environ.get("EDGE_ID")
-
 offload_treshold = 512 * 1024  # 512 KB
 
+
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+ip_uploads = defaultdict(deque)
+banned_ips = {}
+
+
+async def rate_limit_handler(request: Request, exc: Exception) -> Response:
+    client_ip = get_remote_address(request)
+    print("Too many requests from IP of %s", client_ip, flush=True)
+    return JSONResponse(
+        status_code=429, content={"error": "Too many requests", "client_ip": client_ip}
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, handler=rate_limit_handler)
+
 cpu_limit = None
 memory_limit = None
 
@@ -38,27 +59,114 @@ def process_remote(image, file: UploadFile):
     return result
 
 
+def check_upload_limit(ip, size):
+    now = time.monotonic()
+    uploads = ip_uploads[ip]
+    # 10MB limit every 15 seconds
+    # Remove uploads older than 15 seconds
+    while uploads and now - uploads[0][0] >= 15:
+        uploads.popleft()
+    total_uploaded = sum(upload_size for timestamp, upload_size in uploads)
+    if total_uploaded + size > 10 * 1024 * 1024:  # 10MB
+        return False
+    uploads.append((now, size))
+    return True
+
+
+@app.middleware("http")
+async def upload_size_limit(request: Request, call_next):
+
+    if request.url.path == "/process" and request.method == "POST":
+        client_ip = get_remote_address(request)
+        if client_ip in banned_ips:
+            if time.monotonic() < banned_ips[client_ip]:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "IP temporarily banned"},
+                )
+            del banned_ips[client_ip]
+        file_size = request.headers.get("X-File-Size")
+        if file_size is None or not file_size.isdigit():
+            banned_ips[client_ip] = time.monotonic() + 60
+            print(
+                f"INVALID FILE SIZE HEADER | IP: {client_ip}",
+                flush=True,
+            )
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid file size header"},
+            )
+        file_size = int(file_size)
+        if file_size > 10 * 1024 * 1024:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "File too large"},
+            )
+
+        if not check_upload_limit(client_ip, file_size):
+            print(
+                f"UPLOAD QUOTA EXCEEDED | IP: {client_ip}",
+                flush=True,
+            )
+            return JSONResponse(
+                status_code=429,
+                content={"error": "Upload quota exceeded"},
+            )
+
+    return await call_next(request)
+
+
+def get_container_cpu_usage():
+    with open("/sys/fs/cgroup/cpu.stat") as f:
+        stats = dict(line.split() for line in f)
+
+    return int(stats["usage_usec"])
+
+
 @app.post("/process")
+@limiter.limit("2/second")
 async def process(
-    file: UploadFile = File(...), image_id: str = Form(...), camera_id: str = Form(...)
+    request: Request,
+    file: UploadFile = File(...),
+    image_id: str = Form(...),
+    camera_id: str = Form(...),
 ):
+    client_ip = get_remote_address(request)
+    header_file_size = int(request.headers["X-File-Size"])
     start = time.perf_counter()
+    cloud_elapsed = 0
 
     data = await file.read()
+    actual_size = len(data)
 
+    if header_file_size != actual_size:
+        banned_ips[client_ip] = time.monotonic() + 60
+        print(
+            f"FILE SIZE MISMATCH | IP: {client_ip} | "
+            f"Declared: {header_file_size} | "
+            f"Actual: {actual_size}",
+            flush=True,
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"error": "File size mismatch. IP banned for 60 seconds"},
+        )
+
+    start = time.perf_counter()
+    cloud_elapsed = 0
     image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
     if image is None or image.size == 0:
         return {"error": "Invalid image"}
 
     height, width = image.shape[:2]
-
     if len(data) <= offload_treshold:
         result = process_image(image)
         decision = "LOCAL"
         offload_ratio = 0
     else:
-        cpu_usage = psutil.cpu_percent(interval=0.1)
+        pid = psutil.Process()
+        cpu_usage = pid.cpu_percent(interval=0.1)
         memory_usage = psutil.virtual_memory().percent
 
         cpu_pressure = cpu_usage / 100
@@ -94,7 +202,9 @@ async def process(
             else:
                 print("Remote chunk is not empty")
 
+            cloud_start = time.perf_counter()
             remote_processed = process_remote(remote_chunk, file)
+            cloud_elapsed = time.perf_counter() - cloud_start
             # Remove overlapping rows
             remote_result = remote_processed[split_y - remote_start :, :]
             # Reassemble both sections
@@ -119,7 +229,8 @@ async def process(
         f"Decision: {decision} | "
         f"Offloaded: {offload_ratio * 100:.0f}% | "
         f"Hash match: {matches} | "
-        f"Time: {elapsed:.4f}s"
+        f"Time: {elapsed:.4f}s | "
+        f"Cloud Processing Time: {cloud_elapsed:.4f}s"
     )
 
     if not matches:
