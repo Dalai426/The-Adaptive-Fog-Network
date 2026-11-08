@@ -82,7 +82,7 @@ def normal_mode():
     while True:
         image = generate_image()
         send_image(image)
-        time.sleep(2)
+        time.sleep(5)
 
 
 def attack_mode():
@@ -92,7 +92,6 @@ def attack_mode():
     with ThreadPoolExecutor(max_workers=50) as executor:
         pending = set()
         while True:
-            # Keep at most three requests in flight.
             pending = {f for f in pending if not f.done()}
             if len(pending) < 50:
                 image = generate_image()

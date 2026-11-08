@@ -25,8 +25,7 @@ services:
 
   alloy:
     image: grafana/alloy:latest
-    privileged: true
-    user: root
+    privileged: false
     ports:
       - "12345:12345"
     volumes:

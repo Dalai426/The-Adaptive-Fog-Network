@@ -24,17 +24,6 @@ app.state.limiter = limiter
 ip_uploads = defaultdict(deque)
 banned_ips = {}
 
-
-async def rate_limit_handler(request: Request, exc: Exception) -> Response:
-    client_ip = get_remote_address(request)
-    print("Too many requests from IP of %s", client_ip, flush=True)
-    return JSONResponse(
-        status_code=429, content={"error": "Too many requests", "client_ip": client_ip}
-    )
-
-
-app.add_exception_handler(RateLimitExceeded, handler=rate_limit_handler)
-
 cpu_limit = None
 memory_limit = None
 
@@ -57,6 +46,18 @@ def process_remote(image, file: UploadFile):
     if result is None:
         raise RuntimeError("Invalid cloud response")
     return result
+
+
+async def rate_limit_handler(request: Request, exc: Exception) -> Response:
+    client_ip = get_remote_address(request)
+    print("Too many requests from IP of %s", client_ip, flush=True)
+    return JSONResponse(
+        status_code=429, content={"error": "Too many requests", "client_ip": client_ip}
+    )
+
+
+# rate limit by IP
+app.add_exception_handler(RateLimitExceeded, handler=rate_limit_handler)
 
 
 def check_upload_limit(ip, size):
@@ -168,14 +169,12 @@ async def process(
         pid = psutil.Process()
         cpu_usage = pid.cpu_percent(interval=0.1)
         memory_usage = psutil.virtual_memory().percent
-
         cpu_pressure = cpu_usage / 100
         memory_pressure = memory_usage / 100
-
         if cpu_pressure == 0 and memory_pressure == 0:
             offload_ratio = 0
         else:
-            offload_ratio = math.sqrt(0.6 * cpu_pressure**2 + 0.4 * memory_pressure**2)
+            offload_ratio = math.sqrt(0.5 * cpu_pressure**2 + 0.5 * memory_pressure**2)
 
         if offload_ratio == 0:
             result = process_image(image)

@@ -12,8 +12,7 @@ services:
       - CAMERA_ID=camera1
       - ATTACK_MODE=${ATTACK_MODE:-true}
     networks:
-      zone_a_net:
-        ipv4_address: 10.10.1.10
+      - zone_a_net
   camera-b:
     image: camera:latest
     build:
@@ -91,6 +90,7 @@ services:
         ipv4_address: 10.10.4.13
 volumes:
   loki_data:
+
 networks:
   zone_a_net:
     driver: bridge
